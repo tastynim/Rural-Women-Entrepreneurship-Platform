@@ -3,6 +3,17 @@ const router = express.Router();
 const { registerUser, loginUser, getUserProfile, updateUserProfile } = require('../controllers/authorController');
 const { protect } = require('../Middleware/authMiddleware');
 const upload = require('../utils/fileUpload');
+const User = require('../models/User');
+
+// Public: tells the Register page whether any users exist yet
+router.get('/has-users', async (req, res) => {
+  try {
+    const count = await User.countDocuments();
+    res.json({ hasUsers: count > 0 });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
 
 router.post('/register', registerUser);
 router.post('/login', loginUser);

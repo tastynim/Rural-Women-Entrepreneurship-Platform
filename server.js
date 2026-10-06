@@ -1,56 +1,157 @@
 // server.js
-const express = require('express');
-const cors = require('cors');
-const dotenv = require('dotenv');
-const connectDB = require('./config/db.js');
-const orderRoutes = require('./routes/orderRoutes'); // Import your routes
-const reviewRoutes = require('./routes/reviewRoutes'); // review routes
-const analyticsRoutes = require('./routes/analyticsRoutes');
-const productRoutes = require('./routes/productRoutes');
-const uploadRoutes = require('./routes/uploadRoutes');
-const authRoutes = require('./routes/authRoutes');
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const cors = require("cors");
+const dotenv = require("dotenv");
+const path = require("path");
+const jwt = require("jsonwebtoken");
 
-// Load the secret variables from the .env file
-dotenv.config(); 
+const connectDB = require("./config/db.js");
+const Message = require("./models/Message");
+const Conversation = require("./models/Conversation");
 
-// Connect to MongoDB
-connectDB();     
+// Routes
+const orderRoutes = require("./routes/orderRoutes");
+const reviewRoutes = require("./routes/reviewRoutes");
+const analyticsRoutes = require("./routes/analyticsRoutes");
+const productRoutes = require("./routes/productRoutes");
+const uploadRoutes = require("./routes/uploadRoutes");
+const authRoutes = require("./routes/authRoutes");
+const cartRoutes = require("./routes/cartRoutes");
+const adminRoutes = require("./routes/adminRoutes");
+const resourceRoutes = require("./routes/resourceRoutes");
+const skillCertRoutes = require("./routes/skillCertRoutes");
+const forumRoutes = require("./routes/forumRoutes");
+const mentorRoutes = require("./routes/mentorRoutes");
+const paymentRoutes = require("./routes/paymentRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
+const successStoryRoutes = require("./routes/successStoryRoutes");
+const chatRoutes = require("./routes/chatRoutes");
 
-// Initialize the Express app
+dotenv.config();
+connectDB();
+
 const app = express();
+const httpServer = http.createServer(app);
 
-// Enable CORS for frontend communication
+// ── Socket.io setup ──────────────────────────────────────────────────────────
+const io = new Server(httpServer, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
+});
+
+// Authenticate socket connections using JWT
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token;
+  if (!token) return next(new Error("Authentication error: no token"));
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || "secret123");
+    socket.user = decoded; // { id, role }
+    next();
+  } catch {
+    next(new Error("Authentication error: invalid token"));
+  }
+});
+
+// Track which users are online: userId -> socketId
+const onlineUsers = new Map();
+
+io.on("connection", (socket) => {
+  const userId = socket.user.id;
+  onlineUsers.set(userId, socket.id);
+  io.emit("online-users", Array.from(onlineUsers.keys()));
+
+  console.log(`Socket connected: user ${userId}`);
+
+  // Join a conversation room
+  socket.on("join-conversation", (conversationId) => {
+    socket.join(conversationId);
+  });
+
+  // Send a message
+  socket.on("send-message", async ({ conversationId, text }) => {
+    try {
+      if (!conversationId || !text) return;
+
+      // Verify sender is a participant
+      const conv = await Conversation.findOne({
+        _id: conversationId,
+        participants: userId,
+      });
+      if (!conv) return;
+
+      // Save to DB
+      const msg = await Message.create({
+        conversation: conversationId,
+        sender: userId,
+        text,
+      });
+
+      // Update conversation lastMessage
+      await Conversation.findByIdAndUpdate(conversationId, {
+        lastMessage: text,
+        lastMessageAt: new Date(),
+      });
+
+      // Populate sender info
+      const populated = await msg.populate("sender", "name photo");
+
+      // Emit to everyone in the room
+      io.to(conversationId).emit("new-message", populated);
+    } catch (err) {
+      console.error("send-message error:", err.message);
+    }
+  });
+
+  // Typing indicator
+  socket.on("typing", ({ conversationId, isTyping }) => {
+    socket.to(conversationId).emit("typing", { userId, isTyping });
+  });
+
+  socket.on("disconnect", () => {
+    onlineUsers.delete(userId);
+    io.emit("online-users", Array.from(onlineUsers.keys()));
+    console.log(`Socket disconnected: user ${userId}`);
+  });
+});
+
+// ── Express middleware ───────────────────────────────────────────────────────
 app.use(cors());
-
-// Middleware to allow your server to read JSON data
 app.use(express.json());
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// simple request logger for debugging
 app.use((req, res, next) => {
   console.log(`Incoming ${req.method} ${req.url}`);
   next();
 });
 
-// Root endpoint
-app.get('/', (req, res) => {
-  res.json({ message: 'Server running successfully', status: 'online' });
+app.get("/", (req, res) => {
+  res.json({ message: "Server running successfully", status: "online" });
 });
 
-// Tell the app to use the order routes we created
-app.use('/api/orders', orderRoutes);
-// reviews
-app.use('/api/reviews', reviewRoutes);
-app.use('/api/analytics', analyticsRoutes);
-app.use('/api/products', productRoutes);
-app.use('/api', uploadRoutes);
-app.use('/api/auth', authRoutes);
+// ── API Routes ───────────────────────────────────────────────────────────────
+app.use("/api/orders", orderRoutes);
+app.use("/api/reviews", reviewRoutes);
+app.use("/api/analytics", analyticsRoutes);
+app.use("/api/products", productRoutes);
+app.use("/api", uploadRoutes);
+app.use("/api/auth", authRoutes);
+app.use("/api/cart", cartRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/resources", resourceRoutes);
+app.use("/api/skill-certs", skillCertRoutes);
+app.use("/api/forum", forumRoutes);
+app.use("/api/mentorship", mentorRoutes);
+app.use("/api/payments", paymentRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/success-stories", successStoryRoutes);
+app.use("/api/chat", chatRoutes);
 
-// Set the port (use the one from .env, or default to 5000)
+// ── Start server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
-
-// --- THIS IS WHERE APP.LISTEN GOES! ---
-// It turns the server on at the very end
-app.listen(PORT, () => {
-    console.log(`Server running successfully on port ${PORT}`);
+httpServer.listen(PORT, () => {
+  console.log(`Server + Socket.io running on port ${PORT}`);
 });
-

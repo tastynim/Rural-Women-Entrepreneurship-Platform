@@ -6,7 +6,7 @@ mongoose.set('debug', true);
 const connectDB = async () => {
   try {
     const conn = await mongoose.connect(
-      "mongodb://localhost:27017/"
+      process.env.MONGO_URI || "mongodb://localhost:27017/rural_women"
     );
 
     console.log(`MongoDB Connected: ${conn.connection.host} ✅`);
